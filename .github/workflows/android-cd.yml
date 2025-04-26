@@ -1,0 +1,76 @@
+name: Android CD
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build_and_deploy_android:
+    name: Build & Deploy Android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.29.3"
+          channel: "stable"
+
+      - name: Cache Flutter dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.pub-cache
+          key: ${{ runner.os }}-pub-${{ hashFiles('**/pubspec.lock') }}
+          restore-keys: ${{ runner.os }}-pub-
+
+      - name: Setup Firebase config files
+        run: |
+          echo "${{ secrets.FIREBASE_OPTIONS }}" | base64 --decode > lib/firebase_options.dart
+          echo "${{ secrets.GOOGLE_SERVICES_JSON }}" | base64 --decode > android/app/google-services.json
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      # Ensure tests pass before we build
+      - name: Run tests
+        run: flutter test
+
+      # Build Android APK
+      - name: Build Android APK
+        run: flutter build apk --release
+
+      # Upload built APK as an artifact so it can be downloaded from GitHub
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4.6.0
+        with:
+          name: app-release
+          path: build/app/outputs/flutter-apk/app-release.apk
+
+      # Deploy to Firebase App Distribution
+      - name: Upload to Firebase App Distribution
+        uses: wzieba/Firebase-Distribution-Github-Action@v1
+        with:
+          appId: ${{ secrets.FIREBASE_APP_ID }}
+          serviceCredentialsFileContent: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          groups: testers
+          file: build/app/outputs/flutter-apk/app-release.apk
+          releaseNotes: |
+            Build from commit: ${{ github.sha }}
+            ${{ github.event.head_commit.message }}
+
+      - name: Set up GitHub CLI
+        run: |
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo tee /usr/share/keyrings/githubcli.asc > /dev/null
+          sudo apt update
+          sudo apt install gh
+
+      # Create a GitHub Release
+      - name: Create GitHub Release for Android
+        id: create_release_android
+        run: |
+          TAG_NAME="v${{ github.run_number }}"
+          RELEASE_NAME="Release ${TAG_NAME}"
+          gh release create $TAG_NAME build/app/outputs/flutter-apk/app-release.apk --title "$RELEASE_NAME" --notes "Release $TAG_NAME" --target main
+        env:
+          GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN}}
